@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>MyPersonalAI</title>
+
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
+
+</head>
+
+
+<body>
+
+    <div class="app">
+
+        <header>
+
+            <h1>MyPersonalAI</h1>
+
+            <p>
+                Personal AI running in your browser
+            </p>
+
+        </header>
+
+
+        <main>
+
+            <div
+                id="chat"
+                class="chat"
+            >
+
+                <div class="message ai">
+
+                    <span>AI:</span>
+
+                    <p>
+                        Hello! I'm MyPersonalAI.
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="input-area">
+
+                <input
+                    id="messageInput"
+                    type="text"
+                    placeholder="Type a message..."
+                >
+
+                <button
+                    id="sendButton"
+                >
+                    Send
+                </button>
+
+            </div>
+
+        </main>
+
+    </div>
+
+
+    <!-- ONNX Runtime Web -->
+    <script
+        src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.js">
+    </script>
+
+
+    <!-- MyPersonalAI -->
+    <script src="app.js"></script>
+
+</body>
+
+</html>

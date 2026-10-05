@@ -1,34 +1,36 @@
 // ============================================================
-// MyPersonalAI - Browser AI
+// MyPersonalAI - Web Chat
 // ============================================================
 
-
-// ============================================================
-// ELEMENTS
-// ============================================================
+// ------------------------------------------------------------
+// DOM
+// ------------------------------------------------------------
 
 const input = document.getElementById("messageInput");
 const button = document.getElementById("sendButton");
 const chat = document.getElementById("chat");
 
 
-// ============================================================
+// ------------------------------------------------------------
 // CONFIG
-// ============================================================
+// ------------------------------------------------------------
 
 const MODEL_PATH = "./model/model.onnx";
 const TOKENIZER_PATH = "./model/tokenizer.json";
 
 const BLOCK_SIZE = 128;
 
-const MAX_NEW_TOKENS = 80;
+// จำนวนข้อความที่จำย้อนหลัง
+// 10 messages = ประมาณ 5 รอบ User/AI
+const MAX_HISTORY_MESSAGES = 10;
 
+const MAX_NEW_TOKENS = 80;
 const TEMPERATURE = 0.8;
 
 
-// ============================================================
+// ------------------------------------------------------------
 // GLOBAL
-// ============================================================
+// ------------------------------------------------------------
 
 let session = null;
 let tokenizer = null;
@@ -37,524 +39,500 @@ let modelReady = false;
 let generating = false;
 
 
-// ============================================================
-// ADD MESSAGE
-// ============================================================
+// ------------------------------------------------------------
+// CONVERSATION MEMORY
+// ------------------------------------------------------------
+
+// เก็บประวัติจริงของการสนทนา
+//
+// ตัวอย่าง:
+//
+// [
+//     { role: "User", text: "สวัสดี" },
+//     { role: "AI", text: "สวัสดีครับ" },
+//     { role: "User", text: "นายชื่ออะไร" },
+//     { role: "AI", text: "ผมชื่อ MyPersonalAI" }
+// ]
+
+let conversationHistory = [];
+
+
+// ------------------------------------------------------------
+// ADD MESSAGE TO CHAT UI
+// ------------------------------------------------------------
 
 function addMessage(type, text) {
 
-    const message =
-        document.createElement("div");
+    const message = document.createElement("div");
 
-    message.className =
-        `message ${type}`;
+    message.className = "message " + type;
 
+    const label = document.createElement("span");
 
-    const name =
-        document.createElement("span");
-
-    name.textContent =
+    label.textContent =
         type === "user"
             ? "You:"
             : "AI:";
 
+    const paragraph = document.createElement("p");
 
-    const paragraph =
-        document.createElement("p");
+    paragraph.textContent = text;
 
-    paragraph.textContent =
-        text;
-
-
-    message.appendChild(name);
+    message.appendChild(label);
     message.appendChild(paragraph);
-
 
     chat.appendChild(message);
 
-
-    chat.scrollTop =
-        chat.scrollHeight;
-
+    chat.scrollTop = chat.scrollHeight;
 
     return paragraph;
 }
 
 
-// ============================================================
-// LOAD TOKENIZER
-// ============================================================
+// ------------------------------------------------------------
+// CONVERSATION HISTORY
+// ------------------------------------------------------------
+
+function addToHistory(role, text) {
+
+    conversationHistory.push({
+        role: role,
+        text: text
+    });
+
+    // จำกัดจำนวนข้อความ
+    if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
+
+        conversationHistory =
+            conversationHistory.slice(
+                -MAX_HISTORY_MESSAGES
+            );
+    }
+}
+
+
+// ------------------------------------------------------------
+// REMOVE LAST HISTORY MESSAGE
+// ------------------------------------------------------------
+
+function removeLastHistoryMessage() {
+
+    if (conversationHistory.length > 0) {
+
+        conversationHistory.pop();
+    }
+}
+
+
+// ------------------------------------------------------------
+// BUILD PROMPT
+// ------------------------------------------------------------
+
+function buildPrompt() {
+
+    let prompt = "";
+
+    for (const message of conversationHistory) {
+
+        if (message.role === "User") {
+
+            prompt +=
+                "User: " +
+                message.text +
+                "\n";
+
+        } else if (message.role === "AI") {
+
+            prompt +=
+                "AI: " +
+                message.text +
+                "\n";
+        }
+    }
+
+    // ตอนสุดท้ายต้องให้โมเดลตอบ AI
+    prompt += "AI:";
+
+    return prompt;
+}
+
+
+// ------------------------------------------------------------
+// DEBUG CONTEXT
+// ------------------------------------------------------------
+
+function debugContext(prompt) {
+
+    console.log("");
+    console.log("========================================");
+    console.log("MY PERSONAL AI - CONTEXT");
+    console.log("========================================");
+
+    console.log(
+        "Messages:",
+        conversationHistory.length,
+        "/",
+        MAX_HISTORY_MESSAGES
+    );
+
+    console.log("");
+
+    conversationHistory.forEach(
+        (message, index) => {
+
+            console.log(
+                `${index + 1}. ${message.role}:`,
+                message.text
+            );
+        }
+    );
+
+    console.log("");
+
+    const tokenCount = encode(prompt).length;
+
+    console.log(
+        "Prompt tokens:",
+        tokenCount,
+        "/",
+        BLOCK_SIZE
+    );
+
+    console.log("");
+
+    console.log("Prompt sent to model:");
+
+    console.log("----------------------------------------");
+
+    console.log(prompt);
+
+    console.log("----------------------------------------");
+
+    console.log("========================================");
+    console.log("");
+}
+
+
+// ------------------------------------------------------------
+// TOKENIZER
+// ------------------------------------------------------------
 
 async function loadTokenizer() {
 
-    console.log(
-        "Loading tokenizer..."
-    );
-
-
     const response =
-        await fetch(
-            TOKENIZER_PATH
-        );
-
+        await fetch(TOKENIZER_PATH);
 
     if (!response.ok) {
 
         throw new Error(
-            `Cannot load tokenizer.json: ${response.status}`
+            "Cannot load tokenizer.json"
         );
-
     }
-
 
     const data =
         await response.json();
 
-
     tokenizer = {
 
         token_to_id:
-            data.token_to_id,
+            data.token_to_id || {},
 
         id_to_token: {}
-
     };
 
 
+    // สร้าง reverse dictionary
     for (
-        const token in tokenizer.token_to_id
+        const [token, id]
+        of Object.entries(tokenizer.token_to_id)
     ) {
 
-        const id =
-            Number(
-                tokenizer.token_to_id[token]
-            );
-
-
-        tokenizer.id_to_token[id] =
-            token;
-
+        tokenizer.id_to_token[id] = token;
     }
 
 
     console.log(
-        "Tokenizer loaded."
-    );
-
-
-    console.log(
-        "Vocabulary:",
+        "Tokenizer loaded:",
         Object.keys(
             tokenizer.token_to_id
-        ).length
+        ).length,
+        "tokens"
     );
-
 }
 
 
-// ============================================================
-// TOKENIZER
-// ============================================================
+// ------------------------------------------------------------
+// TOKENIZE
+// ------------------------------------------------------------
 
 function tokenize(text) {
 
-    const pattern =
-        /[\u0E01-\u0E2E][\u0E30-\u0E3A\u0E40-\u0E4E]*|[A-Za-z0-9_]+|[^\w\s]/gu;
-
-
-    return text.match(pattern) || [];
-
+    return text.match(
+        /[\u0E01-\u0E2E][\u0E30-\u0E3A\u0E40-\u0E4E]*|[A-Za-z0-9_]+|[^\w\s]/gu
+    ) || [];
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // ENCODE
-// ============================================================
+// ------------------------------------------------------------
 
 function encode(text) {
 
     const tokens =
         tokenize(text);
 
+    const unkId =
+        getSpecialId("<UNK>");
 
-    const ids = [];
+    return tokens.map(
+        token => {
 
+            if (
+                tokenizer.token_to_id[token]
+                !== undefined
+            ) {
 
-    for (
-        const token of tokens
-    ) {
+                return tokenizer.token_to_id[token];
+            }
 
-        const id =
-            tokenizer.token_to_id[token];
-
-
-        if (
-            id !== undefined
-        ) {
-
-            ids.push(
-                Number(id)
-            );
-
-        } else {
-
-            ids.push(
-                Number(
-                    tokenizer.token_to_id["<UNK>"]
-                )
-            );
-
+            return unkId;
         }
-
-    }
-
-
-    return ids;
-
+    );
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // DECODE
-// ============================================================
+// ------------------------------------------------------------
 
 function decode(ids) {
 
-    const specialTokens =
-        new Set([
-            "<PAD>",
-            "<UNK>",
-            "<BOS>",
-            "<EOS>"
-        ]);
+    const ignoredTokens = new Set([
+        "<PAD>",
+        "<UNK>",
+        "<BOS>",
+        "<EOS>"
+    ]);
 
+    let result = "";
 
-    let text = "";
-
-
-    for (
-        const id of ids
-    ) {
+    for (const id of ids) {
 
         const token =
-            tokenizer.id_to_token[
-                Number(id)
-            ];
-
+            tokenizer.id_to_token[id];
 
         if (!token) {
-
             continue;
-
         }
-
 
         if (
-            specialTokens.has(token)
+            ignoredTokens.has(token)
         ) {
-
             continue;
-
         }
 
-
-        text += token;
-
+        result += token;
     }
 
-
-    return text;
-
+    return result;
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // SPECIAL TOKEN
-// ============================================================
+// ------------------------------------------------------------
 
 function getSpecialId(name) {
 
-    const id =
-        tokenizer.token_to_id[name];
-
-
     if (
-        id === undefined
+        tokenizer &&
+        tokenizer.token_to_id &&
+        tokenizer.token_to_id[name]
+        !== undefined
     ) {
 
-        return -1;
-
+        return tokenizer.token_to_id[name];
     }
 
-
-    return Number(id);
-
+    return -1;
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // LOAD MODEL
-// ============================================================
+// ------------------------------------------------------------
 
 async function loadModel() {
 
     console.log(
-        "Loading AI model..."
+        "Loading ONNX model..."
     );
-
-
-    if (
-        !window.ort
-    ) {
-
-        throw new Error(
-            "ONNX Runtime Web was not loaded."
-        );
-
-    }
-
-
-    console.log(
-        "ONNX Runtime version:",
-        window.ort.env
-            ? "loaded"
-            : "unknown"
-    );
-
-
-    // --------------------------------------------------------
-    // Configure WASM
-    // --------------------------------------------------------
-
-    window.ort.env.wasm.wasmPaths =
-        "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
-
-
-    // --------------------------------------------------------
-    // Execution provider
-    // --------------------------------------------------------
-
-    let providers;
-
-
-    if (
-        "gpu" in navigator
-    ) {
-
-        console.log(
-            "WebGPU detected."
-        );
-
-
-        providers = [
-            "webgpu"
-        ];
-
-    } else {
-
-        console.log(
-            "WebGPU not available."
-        );
-
-
-        providers = [
-            "wasm"
-        ];
-
-    }
-
-
-    // --------------------------------------------------------
-    // Create session
-    // --------------------------------------------------------
-
-    console.log(
-        "Creating ONNX session..."
-    );
-
 
     try {
 
-        session =
-            await window.ort.InferenceSession.create(
-                MODEL_PATH,
-                {
-                    executionProviders:
-                        providers,
+        // พยายามใช้ WebGPU ก่อน
+        if ("gpu" in navigator) {
 
-                    graphOptimizationLevel:
-                        "all"
-                }
+            console.log(
+                "Trying WebGPU..."
             );
+
+            try {
+
+                session =
+                    await ort.InferenceSession.create(
+                        MODEL_PATH,
+                        {
+                            executionProviders: [
+                                "webgpu"
+                            ]
+                        }
+                    );
+
+                console.log(
+                    "Using WebGPU"
+                );
+
+            } catch (error) {
+
+                console.warn(
+                    "WebGPU failed, using WASM",
+                    error
+                );
+
+                session =
+                    await ort.InferenceSession.create(
+                        MODEL_PATH,
+                        {
+                            executionProviders: [
+                                "wasm"
+                            ]
+                        }
+                    );
+            }
+
+        } else {
+
+            console.log(
+                "WebGPU unavailable, using WASM"
+            );
+
+            session =
+                await ort.InferenceSession.create(
+                    MODEL_PATH,
+                    {
+                        executionProviders: [
+                            "wasm"
+                        ]
+                    }
+                );
+        }
+
+
+        console.log(
+            "Model inputs:",
+            session.inputNames
+        );
+
+        console.log(
+            "Model outputs:",
+            session.outputNames
+        );
+
+        modelReady = true;
+
+        console.log(
+            "Model ready."
+        );
 
     } catch (error) {
 
-        console.warn(
-            "WebGPU failed. Trying WASM..."
+        console.error(
+            "Model loading failed:",
+            error
         );
 
-
-        session =
-            await window.ort.InferenceSession.create(
-                MODEL_PATH,
-                {
-                    executionProviders:
-                        ["wasm"],
-
-                    graphOptimizationLevel:
-                        "all"
-                }
-            );
-
+        throw error;
     }
-
-
-    console.log(
-        "AI model loaded."
-    );
-
-
-    console.log(
-        "Input names:",
-        session.inputNames
-    );
-
-
-    console.log(
-        "Output names:",
-        session.outputNames
-    );
-
-
-    modelReady = true;
-
 }
 
 
-// ============================================================
-// INITIALIZE
-// ============================================================
+// ------------------------------------------------------------
+// INITIALIZE AI
+// ------------------------------------------------------------
 
 async function initializeAI() {
 
     try {
 
-        console.log(
-            "================================="
-        );
-
-        console.log(
-            "     MyPersonalAI starting..."
-        );
-
-        console.log(
-            "================================="
-        );
-
+        input.disabled = true;
+        button.disabled = true;
 
         await loadTokenizer();
 
         await loadModel();
 
-
-        console.log(
-            "================================="
-        );
-
-        console.log(
-            "             AI READY"
-        );
-
-        console.log(
-            "================================="
-        );
-
-
-        button.disabled =
-            false;
-
-        input.disabled =
-            false;
-
+        input.disabled = false;
+        button.disabled = false;
 
         addMessage(
             "ai",
             "AI พร้อมแล้ว 🤖"
         );
 
+        input.focus();
 
     } catch (error) {
 
-        console.error(
-            "AI initialization failed:",
-            error
-        );
-
+        console.error(error);
 
         addMessage(
             "ai",
-            "โหลด AI ไม่สำเร็จ กรุณาดู Console (F12)"
+            "โหลด AI ไม่สำเร็จ"
         );
-
     }
-
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // SOFTMAX
-// ============================================================
+// ------------------------------------------------------------
 
-function softmax(
-    logits,
-    temperature
-) {
-
-    const values =
-        Array.from(logits);
-
+function softmax(logits, temperature) {
 
     const scaled =
-        values.map(
-            x =>
-                x / temperature
+        logits.map(
+            x => x / temperature
         );
 
 
-    const max =
-        Math.max(
-            ...scaled
-        );
+    const maxLogit =
+        Math.max(...scaled);
 
 
     const exps =
         scaled.map(
-            x =>
-                Math.exp(
-                    x - max
-                )
+            x => Math.exp(x - maxLogit)
         );
 
 
     const sum =
         exps.reduce(
-            (a, b) =>
-                a + b,
+            (a, b) => a + b,
             0
         );
 
 
     return exps.map(
-        x =>
-            x / sum
+        x => x / sum
     );
-
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // SAMPLE TOKEN
-// ============================================================
+// ------------------------------------------------------------
 
 function sampleToken(logits) {
 
@@ -565,8 +543,11 @@ function sampleToken(logits) {
         );
 
 
-    let random =
+    const random =
         Math.random();
+
+
+    let cumulative = 0;
 
 
     for (
@@ -575,58 +556,35 @@ function sampleToken(logits) {
         i++
     ) {
 
-        random -=
+        cumulative +=
             probabilities[i];
 
 
         if (
-            random <= 0
+            random <= cumulative
         ) {
 
             return i;
-
         }
-
     }
 
 
-    return (
-        probabilities.length - 1
-    );
-
+    return probabilities.length - 1;
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
 // GENERATE
-// ============================================================
+// ------------------------------------------------------------
 
 async function generate(prompt) {
-
-    if (!modelReady) {
-
-        throw new Error(
-            "AI model is not ready."
-        );
-
-    }
-
 
     let inputIds =
         encode(prompt);
 
 
-    if (
-        inputIds.length === 0
-    ) {
-
-        return "";
-
-    }
-
-
     // --------------------------------------------------------
-    // Keep context inside model limit
+    // จำกัด context ตาม BLOCK_SIZE
     // --------------------------------------------------------
 
     if (
@@ -635,18 +593,20 @@ async function generate(prompt) {
 
         inputIds =
             inputIds.slice(
-                -BLOCK_SIZE + 1
+                -(BLOCK_SIZE - 1)
             );
-
     }
 
 
     const generatedIds = [];
 
 
-    // --------------------------------------------------------
-    // Generate
-    // --------------------------------------------------------
+    const padId =
+        getSpecialId("<PAD>");
+
+    const eosId =
+        getSpecialId("<EOS>");
+
 
     for (
         let step = 0;
@@ -654,94 +614,64 @@ async function generate(prompt) {
         step++
     ) {
 
-        let context =
-            inputIds;
-
-
-        if (
-            context.length > BLOCK_SIZE
-        ) {
-
-            context =
-                context.slice(
-                    -BLOCK_SIZE
-                );
-
-        }
-
-
         // ----------------------------------------------------
-        // Create padded input
+        // สร้าง input tensor
         // ----------------------------------------------------
 
-        const padded =
+        const inputArray =
             new BigInt64Array(
                 BLOCK_SIZE
             );
 
 
-        const padId =
-            getSpecialId(
-                "<PAD>"
-            );
-
-
-        const actualPadId =
-            padId >= 0
-                ? padId
-                : 0;
-
-
+        // เติม PAD
         for (
             let i = 0;
             i < BLOCK_SIZE;
             i++
         ) {
 
-            padded[i] =
+            inputArray[i] =
                 BigInt(
-                    actualPadId
+                    padId >= 0
+                        ? padId
+                        : 0
                 );
-
         }
 
+
+        // ----------------------------------------------------
+        // ใส่ context
+        // ----------------------------------------------------
 
         for (
             let i = 0;
-            i < context.length;
+            i < inputIds.length;
             i++
         ) {
 
-            padded[i] =
+            inputArray[i] =
                 BigInt(
-                    context[i]
+                    inputIds[i]
                 );
-
         }
 
 
-        // ----------------------------------------------------
-        // Tensor
-        // ----------------------------------------------------
-
         const tensor =
-            new window.ort.Tensor(
+            new ort.Tensor(
                 "int64",
-                padded,
+                inputArray,
                 [1, BLOCK_SIZE]
             );
 
 
         // ----------------------------------------------------
-        // Run model
+        // RUN MODEL
         // ----------------------------------------------------
 
-        const results =
+        const outputs =
             await session.run({
-
-                input_ids:
-                    tensor
-
+                input_ids: tensor
             });
 
 
@@ -750,49 +680,59 @@ async function generate(prompt) {
 
 
         const output =
-            results[
-                outputName
-            ];
+            outputs[outputName];
 
+
+        const dims =
+            output.dims;
+
+
+        // ----------------------------------------------------
+        // vocab size
+        // ----------------------------------------------------
 
         const vocabSize =
-            output.dims[2];
+            dims[dims.length - 1];
 
+
+        // ----------------------------------------------------
+        // position ของ token ล่าสุด
+        // ----------------------------------------------------
 
         const position =
-            context.length - 1;
+            inputIds.length - 1;
 
 
         const start =
             position * vocabSize;
 
 
-        const logits =
-            output.data.slice(
-                start,
-                start + vocabSize
+        const logits = [];
+
+
+        for (
+            let i = 0;
+            i < vocabSize;
+            i++
+        ) {
+
+            logits.push(
+                output.data[start + i]
             );
+        }
 
 
         // ----------------------------------------------------
-        // Select next token
+        // เลือก token ใหม่
         // ----------------------------------------------------
 
         const nextToken =
-            sampleToken(
-                logits
-            );
+            sampleToken(logits);
 
 
         // ----------------------------------------------------
         // EOS
         // ----------------------------------------------------
-
-        const eosId =
-            getSpecialId(
-                "<EOS>"
-            );
-
 
         if (
             eosId >= 0 &&
@@ -800,106 +740,81 @@ async function generate(prompt) {
         ) {
 
             break;
-
         }
 
 
         // ----------------------------------------------------
-        // Add token
+        // เพิ่ม token
         // ----------------------------------------------------
+
+        generatedIds.push(
+            nextToken
+        );
 
         inputIds.push(
             nextToken
         );
 
 
-        generatedIds.push(
-            nextToken
-        );
-
-
         // ----------------------------------------------------
-        // Stop at next User message
+        // หยุดถ้าโมเดลเริ่มสร้าง User ใหม่
         // ----------------------------------------------------
 
         const currentText =
-            decode(
-                generatedIds
-            );
+            decode(generatedIds);
 
 
         if (
-            currentText.includes(
-                "User:"
-            )
+            currentText.includes("User:")
         ) {
 
             break;
-
         }
 
 
-        // ให้ browser มีโอกาส render
+        // ----------------------------------------------------
+        // ให้ browser หายใจ
+        // ----------------------------------------------------
+
         await new Promise(
             resolve =>
-                setTimeout(
-                    resolve,
-                    0
-                )
+                setTimeout(resolve, 0)
         );
-
     }
 
+
+    // --------------------------------------------------------
+    // Decode
+    // --------------------------------------------------------
 
     let response =
-        decode(
-            generatedIds
-        );
+        decode(generatedIds);
 
 
     // --------------------------------------------------------
-    // Clean
+    // Cleanup
     // --------------------------------------------------------
 
-    if (
-        response.includes("User:")
-    ) {
-
-        response =
-            response.split(
-                "User:",
-                1
-            )[0];
-
-    }
-
-
     response =
-        response.replace(
-            /AI:/g,
-            ""
-        );
-
-
-    response =
-        response.trim();
+        response
+            .replace(/User:/g, "")
+            .replace(/AI:/g, "")
+            .trim();
 
 
     return response;
-
 }
 
 
-// ============================================================
-// SEND
-// ============================================================
+// ------------------------------------------------------------
+// SEND MESSAGE
+// ------------------------------------------------------------
 
 async function sendMessage() {
 
+    // ป้องกันกดซ้ำ
     if (generating) {
-
         return;
-
     }
 
 
@@ -907,12 +822,8 @@ async function sendMessage() {
         input.value.trim();
 
 
-    if (
-        text === ""
-    ) {
-
+    if (!text) {
         return;
-
     }
 
 
@@ -920,16 +831,15 @@ async function sendMessage() {
 
         addMessage(
             "ai",
-            "AI กำลังโหลดอยู่ รอสักครู่นะ..."
+            "AI ยังโหลดไม่เสร็จ"
         );
 
         return;
-
     }
 
 
     // --------------------------------------------------------
-    // User message
+    // USER MESSAGE
     // --------------------------------------------------------
 
     addMessage(
@@ -938,23 +848,21 @@ async function sendMessage() {
     );
 
 
-    input.value =
-        "";
+    // --------------------------------------------------------
+    // เพิ่ม User เข้า memory
+    // --------------------------------------------------------
+
+    addToHistory(
+        "User",
+        text
+    );
 
 
-    generating =
-        true;
-
-
-    button.disabled =
-        true;
-
-    input.disabled =
-        true;
+    input.value = "";
 
 
     // --------------------------------------------------------
-    // AI placeholder
+    // AI PLACEHOLDER
     // --------------------------------------------------------
 
     const aiParagraph =
@@ -964,37 +872,75 @@ async function sendMessage() {
         );
 
 
+    generating = true;
+
+    input.disabled = true;
+    button.disabled = true;
+
+
     try {
 
-        const prompt =
-            "User: " +
-            text +
-            "\nAI:";
+        // ----------------------------------------------------
+        // สร้าง prompt จากประวัติทั้งหมด
+        // ----------------------------------------------------
 
+        const prompt =
+            buildPrompt();
+
+
+        // ----------------------------------------------------
+        // DEBUG
+        // ----------------------------------------------------
+
+        debugContext(prompt);
+
+
+        // ----------------------------------------------------
+        // GENERATE
+        // ----------------------------------------------------
 
         const response =
-            await generate(
-                prompt
-            );
+            await generate(prompt);
 
 
-        if (
-            response === ""
-        ) {
+        // ----------------------------------------------------
+        // แสดงผล
+        // ----------------------------------------------------
 
-            aiParagraph.textContent =
-                "...";
-
-        } else {
-
-            aiParagraph.textContent =
-                response;
-
-        }
+        const finalResponse =
+            response ||
+            "...";
 
 
-        chat.scrollTop =
-            chat.scrollHeight;
+        aiParagraph.textContent =
+            finalResponse;
+
+
+        // ----------------------------------------------------
+        // สำคัญ:
+        // เพิ่มคำตอบ AI เข้า context หลัง generate เสร็จ
+        // ----------------------------------------------------
+
+        addToHistory(
+            "AI",
+            finalResponse
+        );
+
+
+        // ----------------------------------------------------
+        // DEBUG หลังเพิ่ม AI
+        // ----------------------------------------------------
+
+        console.log(
+            "AI response:",
+            finalResponse
+        );
+
+
+        console.log(
+            "Conversation memory:",
+            conversationHistory
+        );
 
 
     } catch (error) {
@@ -1006,31 +952,93 @@ async function sendMessage() {
 
 
         aiParagraph.textContent =
-            "เกิดข้อผิดพลาดในการสร้างคำตอบ ดู Console (F12)";
+            "เกิดข้อผิดพลาดในการสร้างคำตอบ";
 
 
+        // ----------------------------------------------------
+        // ถ้า generate ไม่สำเร็จ
+        // เอา User ล่าสุดออกจาก memory
+        // ----------------------------------------------------
+
+        removeLastHistoryMessage();
     }
 
 
-    generating =
-        false;
+    generating = false;
 
-
-    button.disabled =
-        false;
-
-    input.disabled =
-        false;
-
+    input.disabled = false;
+    button.disabled = false;
 
     input.focus();
-
 }
 
 
-// ============================================================
+// ------------------------------------------------------------
+// CLEAR CONVERSATION
+// ------------------------------------------------------------
+
+function clearConversation() {
+
+    conversationHistory = [];
+
+
+    console.log(
+        "Conversation history cleared."
+    );
+}
+
+
+// เปิดให้เรียกจาก Browser Console ได้
+window.clearConversation =
+    clearConversation;
+
+
+// ------------------------------------------------------------
+// DEBUG MEMORY
+// ------------------------------------------------------------
+
+function showContext() {
+
+    console.log("");
+    console.log(
+        "========== CURRENT MEMORY =========="
+    );
+
+
+    console.log(
+        "Messages:",
+        conversationHistory.length,
+        "/",
+        MAX_HISTORY_MESSAGES
+    );
+
+
+    conversationHistory.forEach(
+        (message, index) => {
+
+            console.log(
+                `${index + 1}. ${message.role}: ${message.text}`
+            );
+        }
+    );
+
+
+    console.log(
+        "===================================="
+    );
+
+    console.log("");
+}
+
+
+// เปิดให้เรียกจาก Browser Console ได้
+window.showContext =
+    showContext;
+
+
+// ------------------------------------------------------------
 // EVENTS
-// ============================================================
+// ------------------------------------------------------------
 
 button.addEventListener(
     "click",
@@ -1043,26 +1051,23 @@ input.addEventListener(
     event => {
 
         if (
-            event.key === "Enter"
+            event.key === "Enter" &&
+            !event.shiftKey
         ) {
 
+            event.preventDefault();
+
             sendMessage();
-
         }
-
     }
 );
 
 
-// ============================================================
+// ------------------------------------------------------------
 // START
-// ============================================================
+// ------------------------------------------------------------
 
-button.disabled =
-    true;
-
-input.disabled =
-    true;
-
+input.disabled = true;
+button.disabled = true;
 
 initializeAI();
